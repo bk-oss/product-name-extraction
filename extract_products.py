@@ -6,13 +6,16 @@ import sys
 import unicodedata
 from typing import List
 
+with open(sys.argv[1], 'r', encoding='utf-8') as f:
+    content = f.read()
+
 from google import genai
 from dotenv import load_dotenv
 
 
 load_dotenv()
 
-DEFAULT_MODEL = "gemini-2.5-flash"
+DEFAULT_MODEL = "gemini-3-pro-preview"
 
 DESCRIPTOR_PATTERN = re.compile(
     r"\b(\d+[\.,]?\d*\s?(?:ml|l|g|kg|oz|fl\s?oz)|edition\s+limitee|limited\s+edition|fortifiant|verbesserte\s+formel)\b",

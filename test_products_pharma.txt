@@ -1,0 +1,13 @@
+Pharmacy restock list:
+- Doliprane Paracetamol Comprime 1000mg boite de 8
+- Efferalgan Vitamine C 500mg / 200mg comprimes effervescents
+- Nurofen Ibuprofene 400mg 12 comprimes
+- Dafalgan Codeine 500mg / 30mg, edition promotionnelle
+- Augmentin Amoxicilline Acide Clavulanique 1g/125mg, boite 14
+- Ventoline Inhalateur 100 microgrammes/dose
+- Biafine Emulsion cutanee tube 93g
+
+Non-product noise:
+- Dr Martin, pharmacien responsable
+- Livraison 24h, remise 10%
+- Accessoires: pilulier, masque, thermometre

@@ -1,0 +1,8 @@
+Test with pipe-separated values:
+- La Roche-Posay Cicaplast Baume B5+ 100ml edition limitee
+- SVR | AR | CREME | SENSIFINE | Endothelyor2.5% | SOINANTI-ROUGEUURS | HYDRATANT APAISANT | NTENSIF | ANTI-REDNESS | MOISTURISING SC | NTENSIVE CARE
+- Bioderma Sensibio H2O eau micellaire 500ml
+
+Non-product noise:
+- Conseil dermato
+- Livraison gratuite

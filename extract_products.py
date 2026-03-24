@@ -19,6 +19,7 @@ def _extract_product_lines(text: str) -> List[Tuple[int, str]]:
     """
     Pre-parse input to identify product lines (lines starting with - or •).
     Returns list of (line_number, content) tuples.
+    Handles pipe-separated values by replacing pipes with spaces.
     """
     products = []
     lines = text.split('\n')
@@ -43,19 +44,16 @@ def _extract_product_lines(text: str) -> List[Tuple[int, str]]:
             if content.startswith(('Conseil', 'Livraison', 'Accessoires', 'Reviews')):
                 continue
             
-            # If too many pipes (> 3), it's likely encoded garbage
-            # Extract just the first part before the first pipe
+            # Handle pipe-separated values: replace pipes with spaces
             pipe_count = content.count('|')
-            if pipe_count > 3:
-                # Extract just the first token (brand name)
-                first_part = content.split('|')[0].strip()
-                if len(first_part) > 2:
-                    products.append((idx, first_part))
-                continue
+            if pipe_count > 0:
+                # Replace pipes with spaces and clean up multiple spaces
+                content = re.sub(r'\s*\|\s*', ' ', content)
+                content = re.sub(r'\s+', ' ', content).strip()
             
             # Skip if it looks like encoded/OCR garbage (too many % or mixed case patterns)
             percent_count = content.count('%')
-            if percent_count > 1:
+            if percent_count > 2:
                 continue
             
             products.append((idx, content))
@@ -66,8 +64,18 @@ def _extract_product_lines(text: str) -> List[Tuple[int, str]]:
 def _clean_product_name(raw_name: str) -> str:
     """
     Use regex to clean product name: remove measurements, qualifiers, etc.
+    Handles pipe-separated values and various product encoding formats.
     """
     cleaned = raw_name
+    
+    # Handle concatenated descriptors (e.g., "SOINANTI-ROUGEUURS" -> split into "SOIN ANTI-ROUGEURS")
+    # Insert spaces before capital letters in concatenated words marked as descriptors
+    cleaned = re.sub(r'(SOIN)(ANTI)', r'\1 \2', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r'(ANTI[A-Z])', r' \1', cleaned)
+    
+    # Fix common OCR typos in French product descriptors
+    cleaned = re.sub(r'ROUGEUURS?', 'ROUGEURS', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r'NTENSIF', 'INTENSIF', cleaned, flags=re.IGNORECASE)
     
     # Remove "lot X", "lot 2x200ml" patterns completely
     cleaned = re.sub(r'\s+lot\s+\d+x\d+(?:ml|g)?', '', cleaned, flags=re.IGNORECASE)
@@ -76,11 +84,12 @@ def _clean_product_name(raw_name: str) -> str:
     # Remove quantity markers (2x200ml, 3x100ml, etc.)
     cleaned = re.sub(r'\s+\d+x\d+(?:ml|g|l)?', '', cleaned, flags=re.IGNORECASE)
     
-    # Remove percentages and promo discounts (promo -15%, -20%, etc.)
-    cleaned = re.sub(r'\s+(?:promo)?\s*-?\s*\d+\s*%', '', cleaned, flags=re.IGNORECASE)
-    
     # Remove standalone "promo" word
     cleaned = re.sub(r'\s+promo\b', '', cleaned, flags=re.IGNORECASE)
+    
+    # Remove percentages and promo discounts (promo -15%, -20%, etc.)
+    # But keep them if they're likely ingredient percentages within the name
+    cleaned = re.sub(r'\s+(?:promo)?\s*-?\s*\d+\s*%(?=\s|$)', '', cleaned, flags=re.IGNORECASE)
     
     # Remove measurements (ml, g, kg, l, oz, FL OZ, etc.)
     cleaned = re.sub(r'\s+\d+(?:\.\d+)?\s*(?:ml|l|litre|liter|g|gram|kg|kilo|oz|fl\s?oz)\b', '', cleaned, flags=re.IGNORECASE)
@@ -94,6 +103,11 @@ def _clean_product_name(raw_name: str) -> str:
     # Remove trailing + or ® or ™ or © when clearly separate
     cleaned = re.sub(r'\s+[+®™©]\s*$', '', cleaned)
     cleaned = re.sub(r'[+®™©]\s+$', '', cleaned)
+    
+    # Remove common French/English product descriptors and benefit claims
+    # These typically come at the end or scattered in pipe-separated values
+    descriptor_pattern = r'\s+(?:ANTI-?REDNESS|MOISTURISING|MOISTURIZING|INTENSIVE|INTENSIF|NTENSIVE|NTENSIF|CARE|SC|HYDRATANT|APAISANT|TREATMENT|SERUM|GEL|CREAM|BALM|SPRAY|LOTION|SHAMPOO|CONDITIONER|MASK|OIL|ESSENCE|TONER|SOAP|CLEANER|CLEANSER|WASH|FOAM|MOUSSE|SOIN|ANTI-?ROUGEURS?|ANTI-?ROUGES?|SUPER|ULTRA)\b'
+    cleaned = re.sub(descriptor_pattern, '', cleaned, flags=re.IGNORECASE)
     
     # Clean up extra spaces
     cleaned = re.sub(r'\s+', ' ', cleaned).strip()

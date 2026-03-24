@@ -6,6 +6,7 @@ A high-precision product name extractor designed to extract brand + product refe
 
 ✅ **No Hallucination** - Regex-based line identification prevents inventing products  
 ✅ **Deterministic Cleaning** - Removes measurements, quantities, marketing terms via regex patterns  
+✅ **Pipe-Separated Input Support** - Automatically converts `|`-separated values to space-separated, handles encoded product data  
 ✅ **OCR Error Handling** - Fixes common mistakes: `L'0real` → `L'Oreal`, `Shampo0ing` → `Shampooing`  
 ✅ **Noisy Data Filtering** - Automatically filters out noise, corrupted lines, and non-product text  
 ✅ **Preserves Order** - Products extracted in the order they appear in input  
@@ -18,13 +19,16 @@ A high-precision product name extractor designed to extract brand + product refe
 1. **Line Identification (Regex)**
    - Scans for lines starting with `-` or `•`
    - Filters out noise sections (Non-product, Conseil, Livraison, etc.)
-   - Detects and extracts from heavily corrupted lines (too many pipes)
+   - **Handles pipe-separated values**: Automatically replaces `|` with spaces for cleaner parsing
+   - Supports encoded product formats (attribute pipes)
 
 2. **Cleaning (Regex)**
    - Removes measurements: `100ml`, `500g`, `%`
    - Removes quantities: `lot 2x200ml`, `pack of`, `buy 1 get`
-   - Removes marketing: `edition limitee`, `nouvelle formule`, `promo -15%`
+   - Removes marketing terms: `edition limitee`, `nouvelle formule`, `promo -15%`
+   - Removes special product descriptors: `ANTI-REDNESS`, `MOISTURISING`, `INTENSIVE CARE`
    - Removes special characters: `+`, `®`, `™`, `©`
+   - Cleans up extra spaces
 
 3. **Optional OCR Correction (LLM)**
    - Uses Gemini API (if enabled) to fix OCR errors only
@@ -78,6 +82,11 @@ python extract_products.py /path/to/your/file.txt
 python extract_products.py "La Roche-Posay Cicaplast Baume B5+ 100ml edition limitee"
 ```
 
+### With Pipe-Separated Values:
+```bash
+python extract_products.py "- SVR | AR | CREME | SENSIFINE | Endothelyor2.5% | SOINANTI-ROUGEUURS"
+```
+
 ### From Standard Input:
 ```bash
 python extract_products.py < test_products_pharma.txt
@@ -98,6 +107,84 @@ Extracted Products:
 6. Mustela Stelatopia Huile Lavante [1.0]
 7. Vichy Dercos Shampooing Anti-Pelliculaire [1.0]
 8. Ducray Anaphase+ Shampooing [1.0]
+9. SVR AR CREME SENSIFINE Endothelyor [1.0]
+------------------------------------------------------------
+Total: 9 products
+```
+
+## Handling Pipe-Separated Values
+
+The tool automatically detects and processes pipe-separated values (common in database exports or poorly-formatted product lists). Example:
+
+**Input:**
+```
+- SVR | AR | CREME | SENSIFINE | Endothelyor2.5% | SOINANTI-ROUGEUURS | HYDRATANT APAISANT | NTENSIF | ANTI-REDNESS | MOISTURISING SC | NTENSIVE CARE
+```
+
+**Processing:**
+1. Replaces pipes with spaces: `SVR AR CREME SENSIFINE Endothelyor2.5% SOINANTI-ROUGEUURS HYDRATANT APAISANT ...`
+2. Removes trailing descriptors: `SVR AR CREME SENSIFINE Endothelyor`
+3. Final output: `SVR AR CREME SENSIFINE Endothelyor`
+
+## Examples
+
+### Example 1: Clean Product List
+```bash
+python extract_products.py test_products_parapharma.txt
+```
+
+### Example 2: Messy Mixed Format
+```bash
+echo "- La Roche-Posay 100ml edition limitee
+- SVR | SENSIFINE | CREME | 5%
+- Conseil dermato (noise)" | python extract_products.py
+```
+
+Returns:
+```
+Extracted Products:
+------------------------------------------------------------
+1. La Roche-Posay [1.0]
+2. SVR SENSIFINE CREME [1.0]
+------------------------------------------------------------
+Total: 2 products
+```
+
+### Example 3: With OCR Correction (Optional)
+```bash
+GEMINI_MODEL=gemini-2.5-flash python extract_products.py messy_ocr.txt
+```
+
+## Supported Input Formats
+
+- **Standard lists**: `- Product Name 100ml`  
+- **Bullet points**: `• Product Name`  
+- **Pipe-separated**: `- Brand | Type | Product | Attr1 | Attr2`  
+- **Mixed case**: `ProDuCt NaMe` (normalized)  
+- **With measurements**: `Product 500ml pack of 3` (cleaned)  
+- **With promotions**: `Product promo -15%` (cleaned)  
+
+## Troubleshooting
+
+### No products extracted
+- Check that input lines start with `-` or `•`
+- Ensure lines aren't marked as "Non-product" or "Accessoires"
+- Verify input isn't too short (minimum 5 characters)
+
+### Too many products with garbage text
+- Check for Unicode or encoding issues
+- Reduce percentage count tolerance if needed
+- Review test files for noise pattern examples
+
+### OCR not fixing errors
+- Ensure `GEMINI_API_KEY` is set correctly
+- Check model name in `.env`: `GEMINI_MODEL=gemini-2.5-flash`
+- Test with `-–model gemini-2.5-flash` flag
+
+## License
+
+MIT - See LICENSE file
+
 9. SVR [1.0]
 ------------------------------------------------------------
 Total: 9 products

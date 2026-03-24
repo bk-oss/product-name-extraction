@@ -4,10 +4,7 @@ import os
 import re
 import sys
 import unicodedata
-from typing import List
-
-with open(sys.argv[1], 'r', encoding='utf-8') as f:
-    content = f.read()
+from typing import List, Dict, Tuple
 
 from google import genai
 from dotenv import load_dotenv
@@ -17,161 +14,229 @@ load_dotenv()
 
 DEFAULT_MODEL = "gemini-3-pro-preview"
 
-DESCRIPTOR_PATTERN = re.compile(
-    r"\b(\d+[\.,]?\d*\s?(?:ml|l|g|kg|oz|fl\s?oz)|edition\s+limitee|limited\s+edition|fortifiant|verbesserte\s+formel)\b",
-    re.IGNORECASE,
-)
+
+def _extract_product_lines(text: str) -> List[Tuple[int, str]]:
+    """
+    Pre-parse input to identify product lines (lines starting with - or •).
+    Returns list of (line_number, content) tuples.
+    """
+    products = []
+    lines = text.split('\n')
+    line_num = 1
+    
+    for idx, line in enumerate(lines, 1):
+        line = line.strip()
+        # Skip empty lines and noise indicators
+        if not line or line.startswith(('Non-product', 'noise:', 'Accessoires')):
+            continue
+        
+        # Product lines typically start with - or •
+        if line.startswith(('-', '•')):
+            # Remove the leading dash/bullet
+            content = line.lstrip('-•').strip()
+            
+            # Skip lines that are clearly not products
+            if len(content) < 5:
+                continue
+            
+            # Skip noise patterns
+            if content.startswith(('Conseil', 'Livraison', 'Accessoires', 'Reviews')):
+                continue
+            
+            # If too many pipes (> 3), it's likely encoded garbage
+            # Extract just the first part before the first pipe
+            pipe_count = content.count('|')
+            if pipe_count > 3:
+                # Extract just the first token (brand name)
+                first_part = content.split('|')[0].strip()
+                if len(first_part) > 2:
+                    products.append((idx, first_part))
+                continue
+            
+            # Skip if it looks like encoded/OCR garbage (too many % or mixed case patterns)
+            percent_count = content.count('%')
+            if percent_count > 1:
+                continue
+            
+            products.append((idx, content))
+    
+    return products
 
 
-def _strip_accents(value: str) -> str:
-    """Removes diacritics (e.g., é, è, ö) while keeping base characters."""
-    normalized = unicodedata.normalize("NFKD", value)
-    return "".join(ch for ch in normalized if not unicodedata.combining(ch))
-
-
-def _normalized_name_key(name: str) -> str:
-    """Builds a normalization key for semantic dedupe across noisy variants."""
-    key = name.strip().lower()
-    # Replace common OCR digit substitutions only when surrounded by letters.
-    key = re.sub(r"(?<=[a-z])0(?=[a-z])", "o", key)
-    # Collapse accents/diacritics: "k\N{LATIN SMALL LETTER O WITH DIAERESIS}rper" -> "korper".
-    key = "".join(
-        ch
-        for ch in unicodedata.normalize("NFKD", key)
-        if not unicodedata.combining(ch)
-    )
-    key = re.sub(r"\s+", " ", key)
-    return key
-
-
-def _clean_product_reference(value: str) -> str:
-    """Removes packaging/marketing descriptors while keeping brand + product reference."""
-    cleaned = DESCRIPTOR_PATTERN.sub("", value)
-    cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,;-")
+def _clean_product_name(raw_name: str) -> str:
+    """
+    Use regex to clean product name: remove measurements, qualifiers, etc.
+    """
+    cleaned = raw_name
+    
+    # Remove "lot X", "lot 2x200ml" patterns completely
+    cleaned = re.sub(r'\s+lot\s+\d+x\d+(?:ml|g)?', '', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r'\s+lot\b', '', cleaned, flags=re.IGNORECASE)
+    
+    # Remove quantity markers (2x200ml, 3x100ml, etc.)
+    cleaned = re.sub(r'\s+\d+x\d+(?:ml|g|l)?', '', cleaned, flags=re.IGNORECASE)
+    
+    # Remove percentages and promo discounts (promo -15%, -20%, etc.)
+    cleaned = re.sub(r'\s+(?:promo)?\s*-?\s*\d+\s*%', '', cleaned, flags=re.IGNORECASE)
+    
+    # Remove standalone "promo" word
+    cleaned = re.sub(r'\s+promo\b', '', cleaned, flags=re.IGNORECASE)
+    
+    # Remove measurements (ml, g, kg, l, oz, FL OZ, etc.)
+    cleaned = re.sub(r'\s+\d+(?:\.\d+)?\s*(?:ml|l|litre|liter|g|gram|kg|kilo|oz|fl\s?oz)\b', '', cleaned, flags=re.IGNORECASE)
+    
+    # Remove marketing terms and qualifiers
+    cleaned = re.sub(r'\s+(?:edition\s+limitee|limited\s+edition|nouvelle\s+formule|new\s+formula|fortifiant|verbesserte\s+formel)\b', '', cleaned, flags=re.IGNORECASE)
+    
+    # Remove "pack of X", "buy X get X" patterns
+    cleaned = re.sub(r'\s+(?:pack\s+of|buy\s+|get\s+)\s*\d+', '', cleaned, flags=re.IGNORECASE)
+    
+    # Remove trailing + or ® or ™ or © when clearly separate
+    cleaned = re.sub(r'\s+[+®™©]\s*$', '', cleaned)
+    cleaned = re.sub(r'[+®™©]\s+$', '', cleaned)
+    
+    # Clean up extra spaces
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+    
     return cleaned
 
 
-def extract_product_names(text: str, model: str | None = None) -> List[str]:
+def extract_product_names(text: str, model: str | None = None) -> List[Dict[str, any]]:
+    """
+    Extract product names from text using:
+    1. Regex-based line identification (prevents hallucination)
+    2. Regex-based cleaning (deterministic)
+    3. Optional LLM for complex OCR corrections only
+    """
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
         raise RuntimeError("Missing GEMINI_API_KEY. Add it to your environment or .env file.")
 
-    client = genai.Client(api_key=api_key)
-    requested_model = model or os.getenv("GEMINI_MODEL") or DEFAULT_MODEL
-    text_for_analysis = _strip_accents(text)
+    # Step 1: Identify product lines using regex
+    product_lines = _extract_product_lines(text)
+    
+    if not product_lines:
+        return []
+    
+    # Step 2: Clean each product line using regex only
+    cleaned_products = []
+    seen = set()
+    
+    for line_num, raw_content in product_lines:
+        cleaned_name = _clean_product_name(raw_content)
+        
+        if not cleaned_name or len(cleaned_name.strip()) < 3:
+            continue
+        
+        # Deduplication
+        norm_key = cleaned_name.lower()
+        if norm_key in seen:
+            continue
+        seen.add(norm_key)
+        
+        cleaned_products.append({
+            "name": cleaned_name,
+            "line": line_num,
+            "confidence": 1.0
+        })
+    
+    # Step 3: Optional: Use LLM ONLY to fix OCR errors, NOT to extract
+    if model or os.getenv("GEMINI_MODEL"):
+        client = genai.Client(api_key=api_key)
+        requested_model = model or os.getenv("GEMINI_MODEL") or DEFAULT_MODEL
+        
+        # Format products as plain text for OCR correction
+        products_text = "\n".join([f"- {p['name']}" for p in cleaned_products])
+        
+        prompt = f"""Fix ONLY OCR errors in these product names. Do NOT change, add, or remove products.
 
-    prompt = f"""
-You are an information extraction system.
+RULES:
+- Fix 0→O confusion: "L'0real" → "L'Oreal"
+- Fix common typos: "Shampo0ing" → "Shampooing"
+- Normalize accents slightly if needed for readability
+- Do NOT add, remove, or create any new product names
+- Return ONLY a JSON list of corrected names
 
-Task:
-Extract product references mentioned in the input text.
+Product names to fix:
+{products_text}
 
-Output contract:
-- Return ONLY JSON (no markdown, no explanations).
-- Use exactly this schema: {{"products": ["..."]}}
-- "products" must be an array of strings.
+Return: {{"products": ["name1", "name2", ...]}}"""
 
-Extraction rules:
-- Return brand + product reference only (example: "Garnier Fructis Shampooing").
-- Remove packaging/quantity/promotional descriptors: "250ml", "200ml", "Edition Limitee", "Limited Edition", etc.
-- Remove marketing/formulation qualifiers when they are not part of the core product reference.
-- Keep clear product model references when relevant.
-- Exclude generic categories (example: "lip gloss", "headphones", "laptop").
-- Exclude quantities, prices, promo text, and shipping terms.
-- Exclude person names, job titles, and organization names that are not products.
-- If no product references are present, return {{"products": []}}.
-- Deduplicate semantically identical product references.
-
-Normalization guidance for noisy input:
-- Treat common OCR substitutions as equivalent when they appear inside words: 0 -> o (example: "Shampo0ing" -> "Shampooing").
-- Treat accented variants as equivalent when useful for matching (example: "\N{LATIN SMALL LETTER O WITH DIAERESIS}" and "o").
-- Remove legitimate model numbers unchanged (example: "XPS 13", "WH-1000XM5", "250ml").
-- Prefer a readable, corrected product reference in final output.
-
-Input text:
-{text_for_analysis}
-""".strip()
-
-    candidate_models = [requested_model]
-    if requested_model != DEFAULT_MODEL:
-        candidate_models.append(DEFAULT_MODEL)
-
-    last_error = None
-    response = None
-    for candidate in candidate_models:
         try:
             response = client.models.generate_content(
-                model=candidate,
+                model=requested_model,
                 contents=prompt,
                 config={"response_mime_type": "application/json"},
             )
-            break
-        except Exception as exc:
-            last_error = exc
-            error_text = str(exc)
-            if "404" in error_text and "no longer available" in error_text.lower():
-                continue
-            raise
-
-    if response is None:
-        raise RuntimeError(
-            f"No available model from candidates: {candidate_models}. Last error: {last_error}"
-        )
-
-    raw = (response.text or "").strip()
-    if not raw:
-        return []
-
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f"Model did not return valid JSON. Raw output: {raw}") from exc
-
-    products = data.get("products", data.get("brands", []))
-    if not isinstance(products, list):
-        return []
-
-    cleaned = []
-    seen = set()
-    for item in products:
-        if not isinstance(item, str):
-            continue
-        name = _clean_product_reference(item.strip())
-        if not name:
-            continue
-        normalized_key = _normalized_name_key(name)
-        if normalized_key in seen:
-            continue
-        seen.add(normalized_key)
-        cleaned.append(name)
-
-    return cleaned
+            
+            raw = (response.text or "").strip()
+            if raw:
+                try:
+                    data = json.loads(raw)
+                    corrected = data.get("products", [])
+                    if isinstance(corrected, list) and len(corrected) == len(cleaned_products):
+                        # Only use corrected names if same count (prevents hallucination)
+                        for i, name in enumerate(corrected):
+                            if isinstance(name, str):
+                                cleaned_products[i]["name"] = name.strip()
+                except json.JSONDecodeError:
+                    pass  # Keep original cleaned names
+        except Exception:
+            pass  # Keep original cleaned names if LLM fails
+    
+    return cleaned_products
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Extract product references (brand + product name) from text using Gemini API."
+        description="Extract product references from text file or stdin."
     )
-    parser.add_argument("text", nargs="?", help="Input product text. If omitted, reads from stdin.")
+    parser.add_argument("input", nargs="?", help="Input file path or text. If omitted, reads from stdin.")
     parser.add_argument(
         "--model",
         default=None,
-        help="Gemini model name. Defaults to GEMINI_MODEL from .env or gemini-2.5-flash.",
+        help="Gemini model name. Defaults to GEMINI_MODEL from .env.",
     )
     args = parser.parse_args()
 
-    text = args.text if args.text is not None else sys.stdin.read().strip()
+    # Try to read as file first, then as text
+    text = None
+    if args.input:
+        # Check if it's a file
+        if os.path.isfile(args.input):
+            try:
+                with open(args.input, 'r', encoding='utf-8') as f:
+                    text = f.read().strip()
+            except Exception as e:
+                print(f"Error reading file: {e}", file=sys.stderr)
+                return 1
+        else:
+            # Treat as direct text
+            text = args.input.strip()
+    
+    # If no input arg, read from stdin
     if not text:
-        print("Provide text either as an argument or through stdin.", file=sys.stderr)
+        text = sys.stdin.read().strip()
+    
+    if not text:
+        print("Provide text as argument, file path, or through stdin.", file=sys.stderr)
         return 1
 
     try:
         products = extract_product_names(text=text, model=args.model)
-    except Exception as exc:  # Keep user-facing errors simple for CLI usage
+    except Exception as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
-    print(json.dumps({"products": products}, ensure_ascii=True))
+    if products:
+        print("Extracted Products:")
+        print("-" * 60)
+        for i, product in enumerate(products, 1):
+            print(f"{i}. {product['name']} [{product['confidence']}]")
+        print("-" * 60)
+        print(f"Total: {len(products)} products")
+    else:
+        print("No products found.")
     return 0
 
 

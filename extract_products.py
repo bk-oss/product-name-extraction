@@ -15,11 +15,21 @@ load_dotenv()
 DEFAULT_MODEL = "gemini-3-pro-preview"
 
 
-def _extract_product_lines(text: str) -> List[Tuple[int, str]]:
+def _extract_product_lines(text: str, debug: bool = False) -> List[Tuple[int, str]]:
     """
     Pre-parse input to identify product lines (lines starting with - or •).
     Returns list of (line_number, content) tuples.
     Handles pipe-separated values by replacing pipes with spaces.
+    
+    Args:
+        text: Input text to parse
+        debug: If True, print filtering reasons for skipped lines
+    
+    Filter Rules:
+    1. Lines must start with '-' or '•'
+    2. Content must be ≥ 3 characters (was 5, relaxed for short product names)
+    3. Cannot start with noise keywords: 'Conseil', 'Livraison', 'Accessoires', 'Reviews'
+    4. Max 5 percent signs (was 2, relaxed to allow products with percentages)
     """
     products = []
     lines = text.split('\n')
@@ -29,6 +39,8 @@ def _extract_product_lines(text: str) -> List[Tuple[int, str]]:
         line = line.strip()
         # Skip empty lines and noise indicators
         if not line or line.startswith(('Non-product', 'noise:', 'Accessoires')):
+            if debug and line and line.startswith('Non-product'):
+                print(f"  [SKIP] Line {idx}: Non-product section marker")
             continue
         
         # Product lines typically start with - or •
@@ -37,11 +49,15 @@ def _extract_product_lines(text: str) -> List[Tuple[int, str]]:
             content = line.lstrip('-•').strip()
             
             # Skip lines that are clearly not products
-            if len(content) < 5:
+            if len(content) < 3:
+                if debug:
+                    print(f"  [SKIP] Line {idx}: Too short ({len(content)} chars): {content[:50]}")
                 continue
             
             # Skip noise patterns
             if content.startswith(('Conseil', 'Livraison', 'Accessoires', 'Reviews')):
+                if debug:
+                    print(f"  [SKIP] Line {idx}: Noise keyword match: {content[:50]}")
                 continue
             
             # Handle pipe-separated values: replace pipes with spaces
@@ -51,12 +67,20 @@ def _extract_product_lines(text: str) -> List[Tuple[int, str]]:
                 content = re.sub(r'\s*\|\s*', ' ', content)
                 content = re.sub(r'\s+', ' ', content).strip()
             
-            # Skip if it looks like encoded/OCR garbage (too many % or mixed case patterns)
+            # Skip if it looks like encoded/OCR garbage (too many % signs - relaxed limit)
+            # Increased from 2 to 5 to allow products with percentages in names
             percent_count = content.count('%')
-            if percent_count > 2:
+            if percent_count > 5:
+                if debug:
+                    print(f"  [SKIP] Line {idx}: Too many % signs ({percent_count}): {content[:50]}")
                 continue
             
+            if debug:
+                print(f"  [KEEP] Line {idx}: {content[:60]}")
+            
             products.append((idx, content))
+        elif debug and line.startswith('-'):
+            print(f"  [FORMAT] Line {idx}: Dash detected but not captured: {line[:50]}")
     
     return products
 
@@ -118,19 +142,33 @@ def _clean_product_name(raw_name: str) -> str:
     return cleaned
 
 
-def extract_product_names(text: str, model: str | None = None) -> List[Dict[str, any]]:
+def extract_product_names(text: str, model: str | None = None, debug: bool = False) -> List[Dict[str, any]]:
     """
     Extract product names from text using:
     1. Regex-based line identification (prevents hallucination)
     2. Regex-based cleaning (deterministic)
     3. Optional LLM for complex OCR corrections only
+    
+    Args:
+        text: Input text to parse
+        model: Optional Gemini model for OCR correction
+        debug: If True, print debug info about filtering
     """
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
         raise RuntimeError("Missing GEMINI_API_KEY. Add it to your environment or .env file.")
 
+    if debug:
+        print("=" * 60)
+        print("DEBUG MODE: Extraction Details")
+        print("=" * 60)
+    
     # Step 1: Identify product lines using regex
-    product_lines = _extract_product_lines(text)
+    product_lines = _extract_product_lines(text, debug=debug)
+    
+    if debug:
+        print(f"\nTotal product lines identified: {len(product_lines)}")
+        print("=" * 60)
     
     if not product_lines:
         return []
@@ -214,6 +252,11 @@ def main() -> int:
         default=None,
         help="Gemini model name. Defaults to GEMINI_MODEL from .env.",
     )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable debug mode to see why lines are filtered (useful for troubleshooting).",
+    )
     args = parser.parse_args()
 
     # Try to read as file first, then as text
@@ -240,7 +283,7 @@ def main() -> int:
         return 1
 
     try:
-        products = extract_product_names(text=text, model=args.model)
+        products = extract_product_names(text=text, model=args.model, debug=args.debug)
     except Exception as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
@@ -254,6 +297,9 @@ def main() -> int:
         print(f"Total: {len(products)} products")
     else:
         print("No products found.")
+        if args.debug:
+            print("\nTip: Use --debug flag to see why lines were filtered:")
+            print("  python extract_products.py your_file.txt --debug")
     return 0
 
 

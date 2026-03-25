@@ -104,9 +104,12 @@ def _clean_product_name(raw_name: str) -> str:
     cleaned = re.sub(r'\s+[+®™©]\s*$', '', cleaned)
     cleaned = re.sub(r'[+®™©]\s+$', '', cleaned)
     
+    # Remove French benefit descriptors and separated words that are clearly marketing text
+    cleaned = re.sub(r'\s+–\s+.*?(?=\s+[A-Z]|\d+ mL|$)', '', cleaned)  # Remove dashes followed by marketing text
+    
     # Remove common French/English product descriptors and benefit claims
     # These typically come at the end or scattered in pipe-separated values
-    descriptor_pattern = r'\s+(?:ANTI-?REDNESS|MOISTURISING|MOISTURIZING|INTENSIVE|INTENSIF|NTENSIVE|NTENSIF|CARE|SC|HYDRATANT|APAISANT|TREATMENT|SERUM|GEL|CREAM|BALM|SPRAY|LOTION|SHAMPOO|CONDITIONER|MASK|OIL|ESSENCE|TONER|SOAP|CLEANER|CLEANSER|WASH|FOAM|MOUSSE|SOIN|ANTI-?ROUGEURS?|ANTI-?ROUGES?|SUPER|ULTRA)\b'
+    descriptor_pattern = r'\s+(?:ANTI-?REDNESS|MOISTURISING|MOISTURIZING|INTENSIVE|INTENSIF|NTENSIVE|NTENSIF|CARE|SC|HYDRATANT|APAISANT|TREATMENT|SERUM|GEL|CREAM|BALM|SPRAY|LOTION|SHAMPOO|CONDITIONER|MASK|OIL|ESSENCE|TONER|SOAP|CLEANER|CLEANSER|WASH|FOAM|MOUSSE|SOIN|ANTI-?ROUGEURS?|ANTI-?ROUGES?|SUPER|ULTRA|RIDES|TARGETED|VISIBLE|EXPRESSION|LINES|CONCENTRATED|CORRECTION|COMPLEXE|NEUROPEPTIDIQUE|CIBL[EÉ]ES?|BENEFITS?|SERUM|FORMULA|FORMULE|D\'EXPRESSION|VISIBLES?)\b'
     cleaned = re.sub(descriptor_pattern, '', cleaned, flags=re.IGNORECASE)
     
     # Clean up extra spaces

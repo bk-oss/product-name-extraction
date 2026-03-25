@@ -28,19 +28,32 @@ def _extract_product_lines(text: str, debug: bool = False) -> List[Tuple[int, st
     Filter Rules:
     1. Lines must start with '-' or '•'
     2. Content must be ≥ 3 characters (was 5, relaxed for short product names)
-    3. Cannot start with noise keywords: 'Conseil', 'Livraison', 'Accessoires', 'Reviews'
+    3. Cannot start with noise keywords: 'Conseil', 'Livraison', 'Accessoires', 'Reviews', 'Dr ', 'Mr ', 'Mme ', 'Mlle '
     4. Max 5 percent signs (was 2, relaxed to allow products with percentages)
+    5. Stop processing after "Non-product noise:" marker
     """
     products = []
     lines = text.split('\n')
-    line_num = 1
+    in_noise_section = False
     
     for idx, line in enumerate(lines, 1):
         line = line.strip()
-        # Skip empty lines and noise indicators
-        if not line or line.startswith(('Non-product', 'noise:', 'Accessoires')):
-            if debug and line and line.startswith('Non-product'):
-                print(f"  [SKIP] Line {idx}: Non-product section marker")
+        
+        # Check for non-product section markers
+        if line.startswith(('Non-product', 'noise:', 'Accessoires', 'Footer', 'Notes')):
+            in_noise_section = True
+            if debug and 'Non-product' in line:
+                print(f"  [SECTION] Line {idx}: Non-product section starts - skipping remaining lines")
+            continue
+        
+        # Skip everything in noise section
+        if in_noise_section:
+            if debug:
+                print(f"  [SKIP] Line {idx}: In non-product section: {line[:50]}")
+            continue
+        
+        # Skip empty lines
+        if not line:
             continue
         
         # Product lines typically start with - or •
@@ -54,8 +67,9 @@ def _extract_product_lines(text: str, debug: bool = False) -> List[Tuple[int, st
                     print(f"  [SKIP] Line {idx}: Too short ({len(content)} chars): {content[:50]}")
                 continue
             
-            # Skip noise patterns
-            if content.startswith(('Conseil', 'Livraison', 'Accessoires', 'Reviews')):
+            # Skip noise patterns: person names, roles, delivery info
+            noise_patterns = ('Conseil', 'Livraison', 'Accessoires', 'Reviews', 'Dr ', 'Mr ', 'Mme ', 'Mlle ', 'pharmacien', 'remise', 'pilulier')
+            if content.startswith(noise_patterns):
                 if debug:
                     print(f"  [SKIP] Line {idx}: Noise keyword match: {content[:50]}")
                 continue
@@ -130,6 +144,10 @@ def _clean_product_name(raw_name: str) -> str:
     
     # Remove French benefit descriptors and separated words that are clearly marketing text
     cleaned = re.sub(r'\s+–\s+.*?(?=\s+[A-Z]|\d+ mL|$)', '', cleaned)  # Remove dashes followed by marketing text
+    
+    # Remove entire sections of marketing/descriptive text
+    # Patterns like "Favorise ... Unifies ..." or "MADE IN FRANCE 40 ml"
+    cleaned = re.sub(r'\s+(?:Favorise|Unifie|Facilitates|Unifies|MADE IN FRANCE|BREVET|PATENT|Active la|Activates)\b.*?(?=\s*$)', '', cleaned, flags=re.IGNORECASE)
     
     # Remove common French/English product descriptors and benefit claims
     # These typically come at the end or scattered in pipe-separated values
